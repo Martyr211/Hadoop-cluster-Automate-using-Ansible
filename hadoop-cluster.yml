@@ -1,0 +1,322 @@
+- hosts: localhost
+  
+  vars_prompt:
+      - name: master_ip
+        prompt: Enter master Ip 
+        private: no
+  vars:     
+     java_soft: "https://hadooprpm.s3.ap-south-1.amazonaws.com/hadoopsoftware/jdk-8u171-linux-x64.rpm"
+     hadoop_soft: "https://hadooprpm.s3.ap-south-1.amazonaws.com/hadoopsoftware/hadoop-1.2.1-1.x86_64.rpm"        
+     hadoop_dir: /hadoop_dir
+  
+  tasks:
+       - name: Validating Variables
+         blockinfile:
+           path: /root/Ansible_files/vars_hadoop.yml
+           block: |
+                hadoop_dir: {{ hadoop_dir }}
+                java_soft: {{ java_soft }}
+                hadoop_soft: {{ hadoop_soft }}
+                master_ip: {{ master_ip  }}   
+
+- hosts: Master
+  vars_files:
+          - /root/Ansible_files/vars_hadoop.yml
+  tasks:
+     - name: refreshing system
+       command: 
+                cmd: echo 3 > /proc/sys/vm/drop_caches
+                warn: no    
+     
+     - name: checking for hadoop software
+       command:
+            cmd: rpm -q hadoop 
+            warn: no
+       register: x
+       ignore_errors: yes
+
+     - name: checking for java-sdk software
+       command: 
+            cmd: java -version 
+            warn: no
+       register: y
+       ignore_errors: yes
+
+     - name: Installing Hadoop packages
+       command:
+        cmd: rpm -ivh "{{ hadoop_soft }}" --force
+        warn: no 
+       when: x.rc != 0 
+     
+     - name: Installing java-sdk packages
+       yum: 
+        name: "{{ java_soft }}" 
+        state: present
+        disable_gpg_check: yes
+       when: y.rc != 0
+       ignore_errors: yes
+
+# Master Configuration
+     - name: setting up namenode
+       command: 
+              cmd: rm -rf "{{ hadoop_dir }}"
+              warn: no
+       ignore_errors: yes
+
+     - name: creating namenode folder
+       command:  
+             cmd: mkdir "{{ hadoop_dir }}"
+             warn: no
+       register: fold
+
+     - name: configuring Node
+       blockinfile:
+        path: /etc/hadoop/hdfs-site.xml
+        insertafter: "<configuration>"
+        content: |
+              <property>
+              <name>dfs.name.dir</name>
+              <value>{{ hadoop_dir }}</value>
+              </property>
+       register: conf_file1
+
+     - name: configuring Node
+       blockinfile:
+        path: /etc/hadoop/core-site.xml
+        insertafter: "<configuration>"
+        content: |
+              <property>
+              <name>fs.default.name</name>
+              <value>hdfs://0.0.0.0:9001</value>
+              </property>
+       register: conf_file2
+
+# Firewall setup
+     - name: setting up Firewalld
+       service: 
+               name: firewalld
+               state: stopped 
+               enabled: yes
+    
+     #- name: setting up Firewall
+     #  firewalld:
+     #      port: 9001/tcp
+     #      permanent: true
+     #      state: disabled
+     #      immediate: yes
+     
+     #- name: setting up Firewall
+     #  firewalld: 
+     #      port: 50070/tcp
+     #      permanent: true
+     #      state: disabled
+     #      immediate: yes 
+ 
+# managing services       
+     - name: stopping any hadoop services
+       command: hadoop-daemon.sh stop namenode
+       ignore_errors: yes
+
+     #- name: variable
+     #  debug:
+     #        var: conf_file1
+     #- name: variable
+     #  debug:
+     #        var: conf_file2
+
+     - name: namenode-format
+       shell:
+              cmd:  hadoop namenode -format -y -force
+              warn: no
+       when: fold.failed != "false"
+# Master start Service
+     - name: starting new  hadoop services
+       command: hadoop-daemon.sh start namenode 
+       
+     - name: Ansible Sleep Mode
+       command: /bin/sleep 60
+       async: 120
+       poll: 0
+       
+     - name: checking status
+       command: jps
+       register: jps
+
+     - name: service status
+       debug: 
+            var: jps
+
+        
+# Managed node configuration 
+
+- hosts: Slave
+  
+  vars_files:
+          - /root/Ansible_files/vars_hadoop.yml
+  
+  tasks:
+     - name: refreshing system
+       command: 
+                cmd: echo 3 > /proc/sys/vm/drop_caches
+                warn: no    
+     
+     - name: checking for hadoop software
+       command:
+            cmd: rpm -q hadoop 
+            warn: no
+       register: x
+       ignore_errors: yes
+
+     - name: checking for java-sdk software
+       command: 
+            cmd: java -version 
+            warn: no
+       register: y
+       ignore_errors: yes
+
+  # Software Installing
+ 
+     - name: Installing Hadoop packages
+       command:
+            cmd: rpm -ivh "{{hadoop_soft}}" --force
+            warn: no 
+       when: x.rc != 0 
+     
+     - name: Installing java-sdk packages
+       yum: 
+          name: "{{java_soft}}" 
+          state: present
+          disable_gpg_check: yes
+       when: y.rc != 0
+       ignore_errors: yes
+  
+   # Setup Datanode
+
+     - name: setting up Datanode
+       command:
+              cmd: rm -rf "{{ hadoop_dir }}"
+              warn: no
+       ignore_errors: yes
+
+     - name: creating Datanode folder
+       command:
+             cmd: mkdir "{{ hadoop_dir }}"
+             warn: no
+
+     - name: configuring Node
+       blockinfile:
+        path: /etc/hadoop/hdfs-site.xml
+        insertafter: "<configuration>"
+        content: |
+              <property>
+              <name>dfs.data.dir</name>
+              <value>{{ hadoop_dir }}</value>
+              </property>
+
+
+     - name: configuring Node
+       blockinfile:
+        path: /etc/hadoop/core-site.xml
+        insertafter: "<configuration>"
+        content: |
+              <property>
+              <name>fs.default.name</name>
+              <value>hdfs://{{ master_ip }}:9001</value>
+              </property>
+       
+
+     - name: stopping any hadoop services
+       command: hadoop-daemon.sh stop datanode
+       ignore_errors: yes
+     
+# Firewall setup
+     - name: setting up Firewalld
+       service: 
+               name: firewalld
+               state: stopped 
+               enabled: yes
+  # Starting node services
+     - name: starting new hadoop services
+       command: hadoop-daemon.sh start datanode 
+       
+     - name: Ansible Sleep Mode
+       command: /bin/sleep 60
+       async: 120
+       poll: 0
+     
+     - name: checking status
+       command: echo `jps`
+     
+# Client Setup
+
+- hosts: localhost
+  vars_files:
+          - /root/Ansible_files/vars_hadoop.yml
+  tasks:
+     - name: refreshing system
+       command: 
+              cmd: echo 3 > /proc/sys/vm/drop_caches
+              warn: no    
+     
+     - name: checking for hadoop software
+       command:
+            cmd: rpm -q hadoop 
+            warn: no
+       register: x
+       ignore_errors: yes
+
+     - name: checking for java-sdk software
+       command: 
+            cmd: java -version 
+            warn: no
+       register: y
+       ignore_errors: yes
+  
+  # Software Installing
+ 
+     - name: Installing Hadoop packages
+       command:
+        cmd: rpm -ivh "{{ hadoop_soft }}" --force
+        warn: no 
+       when: x.rc != 0 
+     
+     - name: Installing java-sdk packages
+       yum: 
+        name: "{{ java_soft }}" 
+        state: present
+        disable_gpg_check: yes
+       when: y.rc != 0
+       ignore_errors: yes
+
+  # Setup Client
+
+     - name: configuring Node
+       blockinfile:
+        path: /etc/hadoop/core-site.xml
+        insertafter: "<configuration>"
+        content: |
+              <property>
+              <name>fs.default.name</name>
+              <value>hdfs://{{ master_ip }}:9001</value>
+              </property>
+  
+  # Firewall setup
+     - name: setting up Firewalld
+       service: 
+               name: firewalld
+               state: stopped 
+               enabled: yes  
+
+  # Checking Cluster Status
+
+     - name: Cluster Status
+       command: hadoop dfsadmin -report
+       register: result
+     
+     - debug:
+          var: result
+               
+     - debug: 
+              msg: "||>> Cluster Setup Completed <<||"       
+
+
